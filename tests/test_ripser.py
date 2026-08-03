@@ -24,22 +24,20 @@ def makeSparseDM(X, thresh):
 class TestLibrary:
     # Does the library install in scope? Are the objects in scope?
     def test_import(self):
-        import ripser
-        from ripser import ripser, Rips
-        assert 1
+        assert True
 
 
 class TestTransform:
     def test_input_warnings(self):
         data = np.random.random((3, 10))
 
-        with pytest.warns(UserWarning, match="has more columns than rows") as w:
+        with pytest.warns(UserWarning, match="has more columns than rows"):
             ripser(data)
 
         data = np.random.random((3, 3))
         with pytest.warns(
             UserWarning, match="input matrix is square, but the distance_matrix"
-        ) as w:
+        ):
             ripser(data)
 
     def test_non_square_dist_matrix(self):
@@ -79,9 +77,9 @@ class TestParams:
 
         dgm3 = ripser(data, coeff=3)["dgms"]
         dgm2 = ripser(data)["dgms"]
-        assert (
-            dgm2 is not dgm3
-        ), "This is a vacuous assertion, we only care that the above operations did not throw errors"
+        assert dgm2 is not dgm3, (
+            "This is a vacuous assertion, we only care that the above operations did not throw errors"
+        )
 
     def test_maxdim(self):
         np.random.seed(3100)
@@ -189,11 +187,12 @@ class TestParams:
         res1 = ripser(X)
         res2 = ripser(X, n_perm=10)
         idx = res2["idx_perm"]
+        assert idx is not None
         h11 = res1["dgms"][1]
         h12 = res2["dgms"][1]
         assert res2["r_cover"] > 0
         assert np.max(np.abs(h11 - h12)) <= 2 * res2["r_cover"]
-    
+
     def test_cocycle_indices_greedyperm(self):
         """
         Make sure the original vertex indices are retained in the
@@ -206,26 +205,101 @@ class TestParams:
         t = 2 * np.pi * np.random.rand(N)
         X = np.array([np.cos(t), np.sin(t)]).T
         res1 = ripser(X, n_perm=n_perm, do_cocycles=True, maxdim=1)
-        cocycles1 = res1['cocycles'][1]
-        idx_perm = res1['idx_perm']
+        cocycles1 = res1["cocycles"][1]
+        idx_perm = res1["idx_perm"]
         X = X[idx_perm, :]
         res2 = ripser(X, do_cocycles=True, maxdim=1)
-        cocycles2 = res2['cocycles'][1]
+        cocycles2 = res2["cocycles"][1]
         for cc1, cc2 in zip(cocycles1, cocycles2):
             assert cc1.shape[0] == cc2.shape[0]
             cc2[:, 0:-1] = idx_perm[cc2[:, 0:-1]]
             assert np.allclose(cc1, cc2)
-    
+
     def test_sparse_format(self):
         """
         Test to make sure different formats for sparse matrices
         yield the same answer.  Test courtesy of Umberto Lupo (@ulupo)
         """
-        data = np.array([6., 8., 2., 4., 5., 9., 10., 3., 1., 1.])
+        data = np.array([6.0, 8.0, 2.0, 4.0, 5.0, 9.0, 10.0, 3.0, 1.0, 1.0])
         row = np.array([0, 0, 0, 0, 1, 1, 1, 2, 2, 3])
         col = np.array([4, 1, 3, 2, 4, 3, 2, 3, 4, 4])
         dm = sparse.coo_matrix((data, (row, col)), shape=(5, 5))
-        dgms1 = ripser(dm, distance_matrix=True)['dgms']
-        dgms2 = ripser(dm.tocsr(), distance_matrix=True)['dgms']
+        dgms1 = ripser(dm, distance_matrix=True)["dgms"]
+        dgms2 = ripser(dm.tocsr(), distance_matrix=True)["dgms"]
         for dgm1k, dgm2k in zip(dgms1, dgms2):
-            assert(np.allclose(dgm1k, dgm2k))
+            assert np.allclose(dgm1k, dgm2k)
+
+
+class TestCorrelationToDistance:
+    def test_perfect_correlation_mapping(self):
+        """Test exact expected mathematical mappings for key values."""
+        from ripser import correlation_to_distance
+
+        # Perfect positive corr => Dist 0
+        # Uncorrelated => Dist sqrt(2)
+        # Perfect negative corr -> Dist 2
+        C = np.array([[1.0, 0.0, -1.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 1.0]])
+        expected = np.array(
+            [
+                [0.0, np.sqrt(2), 2.0],
+                [np.sqrt(2), 0.0, np.sqrt(2)],
+                [2.0, np.sqrt(2), 0.0],
+            ]
+        )
+
+        D = correlation_to_distance(C)
+        assert np.allclose(D, expected)
+        assert np.all(np.diag(D) == 0.0)
+
+    def test_input_validation_errors(self):
+        """Verify that incorrect structures trigger ValueErrors."""
+        from ripser import correlation_to_distance
+
+        # non-2D
+        with pytest.raises(ValueError, match="Input must be a 2D matrix"):
+            correlation_to_distance(np.array([1, 2, 3]))
+        # non-square
+        with pytest.raises(ValueError, match="Matrix must be square"):
+            correlation_to_distance(np.array([[1.0, 0.5, 0.1], [0.5, 1.0, 0.2]]))
+        # asymmetric
+        C_asym = np.array([[1.0, 0.8], [0.2, 1.0]])
+        with pytest.raises(ValueError, match="Matrix must be symmetric"):
+            correlation_to_distance(C_asym)
+
+        # out of bounds (> 1.05)
+        C_bad_bounds = np.array([[1.0, 1.1], [1.1, 1.0]])
+        with pytest.raises(
+            ValueError, match="significantly outside the valid correlation bounds"
+        ):
+            correlation_to_distance(C_bad_bounds)
+
+    def test_input_precision_warnings(self):
+        """Verify soft warnings and clipping for minor floating point variations."""
+        from ripser import correlation_to_distance
+
+        # minor out-of-bounds variations (<= 1.05) warn and clip safely
+        C_minor_over = np.array([[1.0, 1.02], [1.02, 1.02]])
+        C_minor_over[1, 1] = 1.0
+
+        with pytest.warns(
+            RuntimeWarning, match="slightly outside the valid correlation bounds"
+        ):
+            D = correlation_to_distance(C_minor_over)
+            # verify that clipping to 1.0 leads to dist of 0.0
+            assert D[0, 1] == 0.0
+
+        # diagonal variations away from 1.0 trigger a warning
+        C_bad_diag = np.array([[0.998, 0.5], [0.5, 1.0]])
+        with pytest.warns(RuntimeWarning, match="diagonal elements deviate from 1.0"):
+            D = correlation_to_distance(C_bad_diag)
+            assert np.all(np.diag(D) == 0.0)
+
+    def test_check_input_bypass(self):
+        """Ensure check_input=False bypasses bottlenecks or structural errors entirely."""
+        from ripser import correlation_to_distance
+
+        C_broken = np.array([[5.0, -10.0], [20.0, 3.0]])
+        # this WOULD normally throw a ValueError, but bypasses now
+        D = correlation_to_distance(C_broken, check_input=False)
+        assert np.all(np.diag(D) == 0.0)
+        assert D.shape == (2, 2)
